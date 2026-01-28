@@ -24,7 +24,7 @@ class RookieText2dataTool(Tool):
         )
         with_comment = tool_parameters.get('with_comment', False)
         dsl_text = format_schema_dsl(meta_data, with_type=True, with_comment=with_comment)
-        # 初始化模板加载器s
+        # 初始化模板加载器
         prompt_loader = PromptLoader()
         # 构建模板上下文
         context = {
@@ -38,6 +38,10 @@ class RookieText2dataTool(Tool):
             limit=tool_parameters.get( 'limit', 100 ),
             user_custom_prompt=tool_parameters.get('custom_prompt', '')
         )
+
+        # 构建用户提示词
+        user_prompt = f"数据库类型：{tool_parameters['db_type']}\n用户需求：{tool_parameters['query']}"
+
         response = self.session.model.llm.invoke(
             model_config=LLMModelConfig(
                 provider=model_info.get('provider'),
@@ -47,23 +51,46 @@ class RookieText2dataTool(Tool):
             ),
             prompt_messages=[
                 SystemPromptMessage(content=system_prompt),
-                UserPromptMessage(
-                    content=f"数据库类型：{tool_parameters['db_type']}\n"
-                            f"用户需求：{tool_parameters['query']}"
-                )
+                UserPromptMessage(content=user_prompt)
             ],
             stream=False
         )
         excute_sql = response.message.content
+
+        # 构建包含调试信息的返回结果
+        result_data = {
+            "excute_sql": excute_sql,
+            "prompt": {
+                "system": system_prompt,
+                "user": user_prompt
+            },
+            "call_llm": {
+                "response": response.message.content,
+                "model": model_info.get('model'),
+                "provider": model_info.get('provider')
+            }
+        }
+
         if (isinstance(excute_sql, str)):
             if (tool_parameters['result_format'] == 'json'):
-                yield self.create_json_message({
-                    "excute_sql": excute_sql
-                })
+                yield self.create_json_message(result_data)
             else:
                 yield self.create_text_message(excute_sql)
         else:
-            yield self.create_text_message("生成失败，请检查输入参数是否正确")
+            # 即使生成失败也返回包含调试信息的结果
+            failure_data = {
+                "excute_sql": "生成失败，请检查输入参数是否正确",
+                "prompt": {
+                    "system": system_prompt,
+                    "user": user_prompt
+                },
+                "call_llm": {
+                    "response": excute_sql,
+                    "model": model_info.get('model'),
+                    "provider": model_info.get('provider')
+                }
+            }
+            yield self.create_json_message(failure_data)
 
     def _extract_sql_from_text(self, text: str) -> str:
         import re
