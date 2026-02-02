@@ -9,10 +9,21 @@ from decimal import Decimal
 import csv
 from io import StringIO
 import re
+import sqlglot
+from sqlglot import exp, errors
 
 class RookieExecuteSqlTool(Tool):
     RISK_KEYWORDS = {"DROP", "DELETE", "TRUNCATE", "ALTER", "UPDATE", "INSERT"}
     SUPPORTED_FORMATS = {"json", "csv", "html", "text"}
+    _SQLGLOT_DIALECT_MAP = {
+    "mysql": "mysql",
+    "postgresql": "postgres",
+    "sqlserver": "tsql",
+    "oracle": "oracle",
+    "gaussdb": "postgres",
+    "kingbase": "postgres",
+    "dm": "oracle",
+}
 
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
         try:
@@ -38,7 +49,7 @@ class RookieExecuteSqlTool(Tool):
         missing = [p for p in required_params if not params.get(p)]
         if missing:
             raise ValueError(f"缺少必要参数: {', '.join(missing)}")
-
+        
         try:
             port = int(params['port'])
         except ValueError:
@@ -47,6 +58,7 @@ class RookieExecuteSqlTool(Tool):
         if self._contains_risk_commands(params['sql']):
             raise ValueError("SQL语句包含危险操作")
         params['schema'] = params.get('schema')if params.get('schema') != None else 'dbo' if params['db_type'] == 'sqlserver' else 'public'
+        params['sql'] = self._safe_apply_limit(params['sql'], limit_count=10, dialect=params['db_type'])
         # 数据库执行参数
         execute_params = {
             'db_type': params['db_type'],
@@ -64,6 +76,29 @@ class RookieExecuteSqlTool(Tool):
         result_format = params.get('result_format', 'text').lower()
 
         return execute_params, result_format
+    
+    def _safe_apply_limit(self, sql, limit_count=10, dialect="mysql"):
+
+        try:
+            # 尝试解析 SQL
+            dialect = self._SQLGLOT_DIALECT_MAP.get(dialect, dialect)
+            expression = sqlglot.parse_one(sql, read=dialect)
+            
+        except errors.ParseError as e:
+            return f"SQL 语法错误: {e}"
+        except Exception as e:
+            return f"未知错误: {e}"
+
+        # 修改 Limit
+        limit_node = expression.args.get("limit")
+        
+        if limit_node:
+            limit_node.arg("expression").replace(exp.Literal.number(limit_count))
+        else:
+            expression = expression.limit(limit_count)
+
+        # 生成 SQL 字符串
+        return expression.sql(dialect=dialect)
 
     def _handle_result_format(self, result: Any, fmt: str, schema: Optional[str]) -> Generator[ToolInvokeMessage, None, None]:
         """处理不同格式的结果输出"""
